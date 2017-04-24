@@ -63,6 +63,7 @@ import static org.bitcoinj.params.Networks.Family.NUBITS;
 import static org.bitcoinj.params.Networks.Family.PEERCOIN;
 import static org.bitcoinj.params.Networks.Family.REDDCOIN;
 import static org.bitcoinj.params.Networks.Family.VPNCOIN;
+import static org.bitcoinj.params.Networks.Family.FREICOIN;
 import static org.bitcoinj.params.Networks.isFamily;
 
 
@@ -172,6 +173,10 @@ public class WalletPocketProtobufSerializer {
 
         if (tx.getLockTime() > 0) {
             txBuilder.setLockTime((int) tx.getLockTime());
+        }
+        
+        if (isFamily(tx.getParams(), FREICOIN)) {
+            txBuilder.setRefHeight((int) tx.getRefHeight());
         }
 
         // Handle inputs.
@@ -441,6 +446,10 @@ public class WalletPocketProtobufSerializer {
 
         if (txProto.hasUpdatedAt()) {
             tx.setUpdateTime(new Date(txProto.getUpdatedAt()));
+        }
+        
+        if (isFamily(tx.getParams(), FREICOIN)) {
+            tx.setRefHeight(txProto.getRefHeight());
         }
 
         int lastIndex = -1;
