@@ -24,6 +24,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.math.LongMath;
+import com.coinomi.core.coins.families.FrcFamily;
 
 import org.bitcoinj.core.ScriptException;
 import org.bitcoinj.core.Sha256Hash;
@@ -41,6 +42,8 @@ import org.bitcoinj.utils.Threading;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -312,6 +315,7 @@ abstract public class TransactionWatcherWallet extends AbstractWallet<BitTransac
         tx.setExtraBytes(txFull.getExtraBytes());
         tx.setUpdateTime(txFull.getUpdateTime());
         tx.setLockTime(txFull.getLockTime());
+        tx.setRefHeight(txFull.getRefHeight());
 
         if (txFull.getAppearsInHashes() != null) {
             for (Map.Entry<Sha256Hash, Integer> appears : txFull.getAppearsInHashes().entrySet()) {
@@ -552,22 +556,157 @@ abstract public class TransactionWatcherWallet extends AbstractWallet<BitTransac
 
     @Override
     public Value getBalance() {
-        return getBalance(false);
+        if (type instanceof FrcFamily) {
+            return getBalanceAfterDemurrage(false);
+        } else {    
+            return getBalance(false);
+        }
     }
 
     public Value getBalance(boolean includeReceiving) {
         lock.lock();
-        try {
-            long value = 0;
-            for (OutPointOutput utxo : getUnspentOutputs(includeReceiving).values()) {
-                value = LongMath.checkedAdd(value, utxo.getValueLong());
+        if (type instanceof FrcFamily) {  //calculate demurrage for Freicoin family
+            return getBalanceAfterDemurrage(includeReceiving);
+        } else {
+            try {
+                long value = 0;
+                for (OutPointOutput utxo : getUnspentOutputs(includeReceiving).values()) {
+                    value = LongMath.checkedAdd(value, utxo.getValueLong());
+                }
+                return type.value(value);
+            } finally {
+                lock.unlock();
             }
-            return type.value(value);
+        }
+    }
+    
+    /**
+     * Calculations for the balance degrading demurrage Freicoin family.
+     */
+     
+    /** Calculate demurrage in decimal **/
+    public static BigDecimal getDemurrage(int old_height, int new_height, BigDecimal value) {
+        BigDecimal fee, fee1;
+
+        fee = new BigDecimal(0.99999904632568359375); // 1-1/Demurrage_RATE from main.h
+        fee1 = new BigDecimal(0.99999904632568359375); // 1-1/Demurrage_RATE from main.h
+
+        BigDecimal fee10, fee20, fee50, fee100, fee200, fee500, fee1k, fee2k, fee5k, fee10k, fee20k, fee50k, fee100k;
+
+        int tx_depth = new_height - old_height;
+
+        if (tx_depth >= 11) {
+                fee10   = new BigDecimal(0.99999046329776309499654691982759443877);
+                fee20   = new BigDecimal(0.99998092668647487954848273626116271134);
+                fee50   = new BigDecimal(0.99995231739829369707227054241238310446);
+                fee100  = new BigDecimal(0.99990463707021789962646395979971612164);
+                fee200  = new BigDecimal(0.99980928323452417587873431606218765014);
+                fee500  = new BigDecimal(0.99952327628330128878179020621334236402);
+                fee1k   = new BigDecimal(0.99904677983210464059665361234357431853);
+                fee2k   = new BigDecimal(0.99809446829289776365047699208361120752);
+                fee5k   = new BigDecimal(0.99524297679030345210109041431719546244);
+                fee10k  = new BigDecimal(0.99050858285042457274038857203695169603);
+                fee20k  = new BigDecimal(0.98110725270035640000929823115532420561);
+                fee50k  = new BigDecimal(0.95343527421558285509855795373296757145);
+                fee100k = new BigDecimal(0.90903882211854332564659835157697062572);
+
+            tx_depth -= 1;
+
+            while (tx_depth >= 10) {
+                while (tx_depth >= 100000) {
+                    tx_depth -= 100000;
+                    fee = fee.multiply(fee100k);
+                }
+                if (tx_depth >= 50000) {
+                    tx_depth -= 50000;
+                    fee = fee.multiply(fee50k);
+                }
+                if (tx_depth >= 20000) {
+                    tx_depth -= 20000;
+                    fee = fee.multiply(fee20k);
+                }
+                if (tx_depth >= 10000) {
+                    tx_depth -= 10000;
+                    fee = fee.multiply(fee10k);
+                }
+                if (tx_depth >= 5000) {
+                    tx_depth -= 5000;
+                    fee = fee.multiply(fee5k);
+                }
+                if (tx_depth >= 2000) {
+                    tx_depth -= 2000;
+                    fee = fee.multiply(fee2k);
+                }
+                if (tx_depth >= 1000) {
+                    tx_depth -= 1000;
+                    fee = fee.multiply(fee1k);
+                }
+                if (tx_depth >= 500) {
+                    tx_depth -= 500;
+                    fee = fee.multiply(fee500);
+                }
+                if (tx_depth >= 200) {
+                    tx_depth -= 200;
+                    fee = fee.multiply(fee200);
+                }
+                if (tx_depth >= 100) {
+                    tx_depth -= 100;
+                    fee = fee.multiply(fee100);
+                }
+                if (tx_depth >= 50) {
+                    tx_depth -= 50;
+                    fee = fee.multiply(fee50);
+                }
+                if (tx_depth >= 20) {
+                    tx_depth -= 20;
+                    fee = fee.multiply(fee20);
+                }
+                if (tx_depth >= 10) {
+                    tx_depth -= 10;
+                    fee = fee.multiply(fee10);
+                }
+            }
+        }
+
+        if (tx_depth > 0) fee = fee.multiply(fee1.pow(tx_depth));
+        
+        fee = fee.multiply(value);
+        fee = value.subtract(fee);
+
+        return fee;
+    }
+
+        /** Calculate demurrage in satoshi **/
+    public static BigInteger getDemurrageInSatoshi(int old_height, int new_height, BigDecimal value) {
+        BigInteger fee;
+        fee = getDemurrage(old_height, new_height, value).setScale(8, BigDecimal.ROUND_HALF_UP).movePointRight(8).toBigIntegerExact();
+
+        return fee;
+    }
+    
+    public BigInteger getTxValueAfterDemurrage(int old_height, int new_height, BigInteger bigV) {
+        BigDecimal in_dec_value = (new BigDecimal(bigV)).movePointLeft(8);
+
+        return bigV.subtract(getDemurrageInSatoshi(old_height,new_height,in_dec_value));
+    }
+    
+    public Value getBalanceAfterDemurrage(boolean includeReceiving) {
+        int new_height = getLastBlockSeenHeight();
+        BigInteger value = BigInteger.ZERO;
+        lock.lock();
+        try {
+            for (OutPointOutput utxo : getUnspentOutputs(includeReceiving).values()) {
+                BitTransaction bitTx = rawTransactions.get(new Sha256Hash(utxo.getTxHash().toString()));
+                int old_height = bitTx.getRefHeight();
+                BigInteger bigV = BigInteger.valueOf(utxo.getValueLong());
+                value = value.add(getTxValueAfterDemurrage(old_height, new_height, bigV));
+            }
+            return type.value(value.longValue());
         } finally {
             lock.unlock();
         }
     }
-
+    
     /**
      * Sets that the specified status is currently updating i.e. getting transactions.
      *
