@@ -3,11 +3,15 @@ package com.coinomi.core.wallet;
 import com.coinomi.core.coins.CoinType;
 import com.coinomi.core.coins.FeePolicy;
 import com.coinomi.core.coins.Value;
+import com.coinomi.core.coins.families.WlcFamily;
+import com.coinomi.core.protos.Protos;
 import com.coinomi.core.wallet.families.bitcoin.BitSendRequest;
+import com.coinomi.core.wallet.families.bitcoin.BitTransaction;
 import com.coinomi.core.wallet.families.bitcoin.CoinSelection;
 import com.coinomi.core.wallet.families.bitcoin.CoinSelector;
 import com.coinomi.core.wallet.families.bitcoin.OutPointOutput;
 import com.google.common.collect.Lists;
+import com.google.common.math.LongMath;
 
 import org.bitcoinj.core.Address;
 import org.bitcoinj.core.Coin;
@@ -15,6 +19,7 @@ import org.bitcoinj.core.ECKey;
 import org.bitcoinj.core.InsufficientMoneyException;
 import org.bitcoinj.core.NetworkParameters;
 import org.bitcoinj.core.ScriptException;
+import org.bitcoinj.core.Sha256Hash;
 import org.bitcoinj.core.Transaction;
 import org.bitcoinj.core.TransactionConfidence;
 import org.bitcoinj.core.TransactionInput;
@@ -30,6 +35,8 @@ import org.bitcoinj.wallet.RedeemData;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
@@ -87,6 +94,26 @@ public class TransactionCreator {
             Coin value = Coin.ZERO;
             for (TransactionOutput output : tx.getOutputs()) {
                 value = value.add(output.getValue());
+            }
+            
+            // Calculate the demurrage fee
+            if (coinType instanceof FrcFamily) {
+                BigInteger fee = BigInteger.ZERO;
+                int new_height = account.getLastBlockSeenHeight();
+
+                for (OutPointOutput utxo : account.getUnspentOutputs(true).values()) {
+                    BitTransaction bitTx = account.rawTransactions.get(new Sha256Hash(utxo.getTxHash().toString())); //(int) txDem.getRefHeight();
+                    int old_height = bitTx.getRefHeight();
+                    long longV = 0;
+                    BigInteger bigV = BigInteger.valueOf(LongMath.checkedAdd(longV, utxo.getValueLong()));
+                    BigDecimal val = (new BigDecimal(bigV).movePointLeft(8));
+                    fee = fee.add(account.getDemurrageInSatoshi(old_height - 2, new_height, val));
+                }
+                fee = fee.add(BigInteger.valueOf(50));
+
+                Transaction.REFERENCE_DEFAULT_MIN_TX_FEE = Coin.valueOf(fee.longValue());
+                Value val = Value.valueOf(account.getCoinType(), fee);
+                req.feePerTxSize = val;
             }
 
             log.info("Completing send tx with {} outputs totalling {} (not including fees)",
@@ -183,6 +210,13 @@ public class TransactionCreator {
             // transaction lists more appropriately, especially when the wallet starts to generate transactions itself
             // for internal purposes.
             tx.setPurpose(Transaction.Purpose.USER_PAYMENT);
+            
+            // Set refHeight for new tx.
+            if (coinType instanceof FrcFamily) {
+                int new_height = account.getLastBlockSeenHeight();
+                req.tx.setRefHeight(new_height);
+            }
+            
             req.setCompleted(true);
             req.fee = calculatedFee;
             log.info("  completed: {}", req.tx);
