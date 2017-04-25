@@ -75,6 +75,10 @@ public class OutPointOutput {
     public Sha256Hash getTxHash() {
         return outPoint.getHash();
     }
+    
+    public long getRefHeight() {
+        return outPoint.getRefHeight();
+    }
 
     public int getAppearedAtChainHeight() {
         return appearedAtChainHeight;
